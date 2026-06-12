@@ -79,6 +79,17 @@ class VLLMWorker(_VllmInnerWorker):
         super().sleep(level=1)
         self.is_weight_offloaded = True
 
+    @staticmethod
+    def _normalize_hf_weight_name(model: torch.nn.Module, name: str) -> str:
+        if name.startswith("model.") and "model" not in model._modules:
+            name = name.removeprefix("model.")
+        if (
+            name.startswith(("embed_tokens.", "layers.", "norm."))
+            and "language_model" in model._modules
+        ):
+            return f"language_model.model.{name}"
+        return name
+
     def batch_load_hf_weight(self, state_dict: dict[str, Any]) -> Any:
         model = self.model_runner.model
         colocate = self.placement_mode == PlacementMode.COLLOCATED
@@ -89,10 +100,15 @@ class VLLMWorker(_VllmInnerWorker):
                 list_args = list(args)
                 list_args[6] = torch.cuda.current_device()
                 new_weight = func(*list_args)
+                name = self._normalize_hf_weight_name(model, name)
                 batch_weight.append((name, new_weight))
             model.load_weights(batch_weight)
         else:
-            model.load_weights(state_dict.items())
+            weights = (
+                (self._normalize_hf_weight_name(model, name), weight)
+                for name, weight in state_dict.items()
+            )
+            model.load_weights(weights)
 
         for name, weight in batch_weight:
             del weight
